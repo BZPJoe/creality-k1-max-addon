@@ -10,8 +10,8 @@ API_TYPE=$(jq -r '.api_type // "moonraker"' /data/options.json)
 UPDATE_INTERVAL=$(jq -r '.update_interval // 5' /data/options.json)
 MQTT_HOST=$(jq -r '.mqtt_host // "core-mosquitto"' /data/options.json)
 MQTT_PORT=$(jq -r '.mqtt_port // 1883' /data/options.json)
-MQTT_USER=$(jq -r '.mqtt_user // empty' /data/options.json)
-MQTT_PASSWORD=$(jq -r '.mqtt_password // empty' /data/options.json)
+MQTT_USER=$(jq -r '.mqtt_user // ""' /data/options.json)
+MQTT_PASSWORD=$(jq -r '.mqtt_password // ""' /data/options.json)
 MQTT_TOPIC_PREFIX=$(jq -r '.mqtt_topic_prefix // "creality_k1_max"' /data/options.json)
 
 # Validate required configuration
