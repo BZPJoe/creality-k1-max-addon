@@ -1,26 +1,23 @@
-ARG BUILD_FROM=python:3.11-slim
-FROM ${BUILD_FROM}
+ARG BUILD_FROM
+FROM $BUILD_FROM
 
-# Set working directory
-WORKDIR /app
-
-# Install system dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    curl \
-    jq \
-    && rm -rf /var/lib/apt/lists/*
+# Install dependencies
+RUN apk add --no-cache \
+    python3 \
+    py3-pip
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
 
-# Copy application files
-COPY . .
+# Copy add-on files
+COPY run.sh /app/
+COPY monitor.py /app/
+RUN chmod +x /app/run.sh /app/monitor.py
 
-# Make run script executable
-RUN chmod a+x run.sh
+# Set working directory
+WORKDIR /app
 
-# Run the application
-CMD ["./run.sh"]
+# Start the add-on
+CMD ["/app/run.sh"]
 
