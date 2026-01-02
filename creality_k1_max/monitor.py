@@ -45,8 +45,9 @@ class CrealityK1MaxMonitor:
         self.mqtt_client.on_connect = self._on_mqtt_connect
         self.mqtt_client.on_disconnect = self._on_mqtt_disconnect
 
-        # WebSocket setup
-        self.websocket_url = f"ws://{self.printer_ip}:{self.printer_port}/websocket"
+        # WebSocket setup - try common Creality ports
+        self.websocket_ports = [8080, 80, 9999, 7125]  # Common Creality websocket ports
+        self.websocket_url = None
         self.ws = None
         self.ws_thread = None
         self.connected = False
@@ -72,8 +73,10 @@ class CrealityK1MaxMonitor:
 
     def _on_websocket_open(self, ws):
         """Callback for websocket connection opened"""
-        logger.info(f"Connected to printer websocket at {self.websocket_url}")
+        logger.info(f"Connected to printer websocket at {ws.url}")
         self.connected = True
+        # Publish online status
+        self.publish(f"{self.mqtt_topic_prefix}/availability", "online", retain=True)
 
     def _on_websocket_message(self, ws, message):
         """Callback for websocket messages"""
@@ -81,15 +84,32 @@ class CrealityK1MaxMonitor:
             data = json.loads(message)
             logger.debug(f"Received websocket message: {data}")
 
-            # Process the message based on Creality websocket format
-            if 'method' in data and data['method'] == 'notify_status_update':
-                # This is a status update message
-                if 'params' in data and len(data['params']) > 0:
-                    status_data = data['params'][0]
-                    self.process_printer_status(status_data)
+            # Handle different Creality websocket message formats
+            if isinstance(data, dict):
+                # Check for Moonraker-style messages first
+                if 'method' in data and data['method'] == 'notify_status_update':
+                    if 'params' in data and len(data['params']) > 0:
+                        status_data = data['params'][0]
+                        self.process_printer_status(status_data)
+                        return
+
+                # Handle Creality direct status messages
+                # Creality printers often send status data directly
+                if any(key in data for key in ['bed', 'nozzle', 'print', 'printer', 'temperature', 'status']):
+                    self.process_printer_status(data)
+                    return
+
+                # Handle array of status updates (some Creality printers send arrays)
+                if isinstance(data, list) and len(data) > 0 and isinstance(data[0], dict):
+                    for status_item in data:
+                        if any(key in status_item for key in ['bed', 'nozzle', 'print', 'printer', 'temperature', 'status']):
+                            self.process_printer_status(status_item)
+                            break  # Process first valid status update
 
         except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse websocket message: {e}")
+            logger.warning(f"Failed to parse websocket message as JSON: {e}")
+            # Some printers might send non-JSON data, log it for debugging
+            logger.debug(f"Raw websocket message: {message[:200]}...")
 
     def _on_websocket_error(self, ws, error):
         """Callback for websocket errors"""
@@ -102,28 +122,52 @@ class CrealityK1MaxMonitor:
         self.connected = False
 
     def connect_websocket(self):
-        """Connect to printer websocket"""
-        try:
-            websocket.enableTrace(False)  # Disable websocket trace logs
-            self.ws = websocket.WebSocketApp(
-                self.websocket_url,
-                on_open=self._on_websocket_open,
-                on_message=self._on_websocket_message,
-                on_error=self._on_websocket_error,
-                on_close=self._on_websocket_close
-            )
+        """Connect to printer websocket, trying multiple common ports"""
+        # If a specific port was configured, try that first
+        ports_to_try = [self.printer_port] if self.printer_port != 8080 else []
+        ports_to_try.extend(self.websocket_ports)
 
-            # Start websocket in a separate thread
-            self.ws_thread = threading.Thread(target=self.ws.run_forever, daemon=True)
-            self.ws_thread.start()
+        # Remove duplicates
+        ports_to_try = list(dict.fromkeys(ports_to_try))
 
-            # Wait a bit for connection
-            time.sleep(2)
-            return self.connected
+        for port in ports_to_try:
+            websocket_url = f"ws://{self.printer_ip}:{port}/websocket"
+            logger.info(f"Trying to connect to websocket: {websocket_url}")
 
-        except Exception as e:
-            logger.error(f"Failed to connect to websocket: {e}")
-            return False
+            try:
+                websocket.enableTrace(False)  # Disable websocket trace logs
+                self.ws = websocket.WebSocketApp(
+                    websocket_url,
+                    on_open=self._on_websocket_open,
+                    on_message=self._on_websocket_message,
+                    on_error=self._on_websocket_error,
+                    on_close=self._on_websocket_close
+                )
+
+                # Start websocket in a separate thread
+                self.ws_thread = threading.Thread(target=self.ws.run_forever, daemon=True)
+                self.ws_thread.start()
+
+                # Wait a bit for connection
+                time.sleep(3)
+
+                if self.connected:
+                    self.websocket_url = websocket_url
+                    logger.info(f"Successfully connected to websocket on port {port}")
+                    return True
+                else:
+                    # Close the connection attempt
+                    if self.ws:
+                        self.ws.close()
+                    self.ws = None
+                    self.ws_thread = None
+
+            except Exception as e:
+                logger.warning(f"Failed to connect to websocket on port {port}: {e}")
+                continue
+
+        logger.error(f"Failed to connect to websocket on any port: {ports_to_try}")
+        return False
 
     def connect_mqtt(self):
         """Connect to MQTT broker"""
@@ -194,56 +238,158 @@ class CrealityK1MaxMonitor:
 
         logger.debug(f"Processing printer status: {status}")
 
-        # Handle Creality websocket data format
-        # Creality sends data in a different structure than Moonraker
+        # Handle various Creality data formats
+        changes_made = False
 
-        # Extract temperature data (Creality format)
+        # Temperature data - handle multiple possible formats
         if "bed" in status:
-            bed_temp = status["bed"].get("actual", 0)
-            bed_target = status["bed"].get("target", 0)
-            self.publish(f"{self.mqtt_topic_prefix}/temperature/bed", bed_temp)
-            self.publish(f"{self.mqtt_topic_prefix}/temperature/bed_target", bed_target)
+            bed_data = status["bed"]
+            if isinstance(bed_data, dict):
+                bed_temp = bed_data.get("actual") or bed_data.get("temperature") or bed_data.get("temp")
+                bed_target = bed_data.get("target")
+            else:
+                bed_temp = bed_data
+                bed_target = None
 
+            if bed_temp is not None:
+                self.publish(f"{self.mqtt_topic_prefix}/temperature/bed", float(bed_temp))
+                changes_made = True
+            if bed_target is not None:
+                self.publish(f"{self.mqtt_topic_prefix}/temperature/bed_target", float(bed_target))
+                changes_made = True
+
+        # Handle nozzle/extruder temperature
         if "nozzle" in status:
-            extruder_temp = status["nozzle"].get("actual", 0)
-            extruder_target = status["nozzle"].get("target", 0)
-            self.publish(f"{self.mqtt_topic_prefix}/temperature/extruder", extruder_temp)
-            self.publish(f"{self.mqtt_topic_prefix}/temperature/extruder_target", extruder_target)
+            nozzle_data = status["nozzle"]
+            if isinstance(nozzle_data, dict):
+                extruder_temp = nozzle_data.get("actual") or nozzle_data.get("temperature") or nozzle_data.get("temp")
+                extruder_target = nozzle_data.get("target")
+            else:
+                extruder_temp = nozzle_data
+                extruder_target = None
 
-        # Extract print status
+            if extruder_temp is not None:
+                self.publish(f"{self.mqtt_topic_prefix}/temperature/extruder", float(extruder_temp))
+                changes_made = True
+            if extruder_target is not None:
+                self.publish(f"{self.mqtt_topic_prefix}/temperature/extruder_target", float(extruder_target))
+                changes_made = True
+
+        # Handle temperature object (some Creality formats)
+        if "temperature" in status:
+            temp_data = status["temperature"]
+            if isinstance(temp_data, dict):
+                if "bed" in temp_data:
+                    bed_info = temp_data["bed"]
+                    if isinstance(bed_info, dict):
+                        bed_temp = bed_info.get("actual", bed_info.get("temperature"))
+                        bed_target = bed_info.get("target")
+                        if bed_temp is not None:
+                            self.publish(f"{self.mqtt_topic_prefix}/temperature/bed", float(bed_temp))
+                            changes_made = True
+                        if bed_target is not None:
+                            self.publish(f"{self.mqtt_topic_prefix}/temperature/bed_target", float(bed_target))
+                            changes_made = True
+
+                if "extruder" in temp_data or "nozzle" in temp_data:
+                    extruder_key = "extruder" if "extruder" in temp_data else "nozzle"
+                    extruder_info = temp_data[extruder_key]
+                    if isinstance(extruder_info, dict):
+                        extruder_temp = extruder_info.get("actual", extruder_info.get("temperature"))
+                        extruder_target = extruder_info.get("target")
+                        if extruder_temp is not None:
+                            self.publish(f"{self.mqtt_topic_prefix}/temperature/extruder", float(extruder_temp))
+                            changes_made = True
+                        if extruder_target is not None:
+                            self.publish(f"{self.mqtt_topic_prefix}/temperature/extruder_target", float(extruder_target))
+                            changes_made = True
+
+        # Print status data
         if "print" in status:
             print_data = status["print"]
-            state = print_data.get("print_state", "unknown")
-            filename = print_data.get("filename", "")
-            progress = print_data.get("progress", 0)
+            if isinstance(print_data, dict):
+                # Print state
+                print_state = print_data.get("print_state") or print_data.get("state")
+                if print_state:
+                    # Normalize state names
+                    if print_state.lower() in ["idle", "ready", "standby"]:
+                        state = "standby"
+                    elif print_state.lower() in ["printing", "print", "active"]:
+                        state = "printing"
+                    elif print_state.lower() in ["paused", "pause"]:
+                        state = "paused"
+                    elif print_state.lower() in ["error", "failed"]:
+                        state = "error"
+                    elif print_state.lower() in ["finished", "complete", "completed"]:
+                        state = "finished"
+                    else:
+                        state = print_state.lower()
 
-            self.publish(f"{self.mqtt_topic_prefix}/state", state)
-            self.publish(f"{self.mqtt_topic_prefix}/filename", filename)
-            self.publish(f"{self.mqtt_topic_prefix}/progress", progress)
+                    self.publish(f"{self.mqtt_topic_prefix}/state", state)
+                    changes_made = True
 
-        # Extract printer state
+                # Filename
+                filename = print_data.get("filename") or print_data.get("file")
+                if filename:
+                    self.publish(f"{self.mqtt_topic_prefix}/filename", str(filename))
+                    changes_made = True
+
+                # Progress
+                progress = print_data.get("progress")
+                if progress is not None:
+                    self.publish(f"{self.mqtt_topic_prefix}/progress", float(progress))
+                    changes_made = True
+
+        # Printer state (alternative location)
         if "printer" in status:
             printer_data = status["printer"]
-            # Map Creality states to standard states
-            creality_state = printer_data.get("state", "unknown")
-            if creality_state == "idle":
-                state = "standby"
-            elif creality_state == "printing":
-                state = "printing"
-            elif creality_state == "paused":
-                state = "paused"
-            elif creality_state == "error":
-                state = "error"
-            else:
-                state = creality_state
+            if isinstance(printer_data, dict):
+                printer_state = printer_data.get("state") or printer_data.get("status")
+                if printer_state:
+                    # Apply same state normalization as above
+                    if printer_state.lower() in ["idle", "ready", "standby"]:
+                        state = "standby"
+                    elif printer_state.lower() in ["printing", "print", "active"]:
+                        state = "printing"
+                    elif printer_state.lower() in ["paused", "pause"]:
+                        state = "paused"
+                    elif printer_state.lower() in ["error", "failed"]:
+                        state = "error"
+                    elif printer_state.lower() in ["finished", "complete", "completed"]:
+                        state = "finished"
+                    else:
+                        state = printer_state.lower()
 
-            self.publish(f"{self.mqtt_topic_prefix}/state", state)
+                    self.publish(f"{self.mqtt_topic_prefix}/state", state)
+                    changes_made = True
 
-        # Publish full status as JSON
-        self.publish(f"{self.mqtt_topic_prefix}/status", status, retain=True)
+        # Overall status field
+        if "status" in status:
+            overall_status = status["status"]
+            if isinstance(overall_status, str):
+                # Map common status strings
+                status_lower = overall_status.lower()
+                if status_lower in ["idle", "ready", "standby"]:
+                    state = "standby"
+                elif status_lower in ["printing", "print", "active"]:
+                    state = "printing"
+                elif status_lower in ["paused", "pause"]:
+                    state = "paused"
+                elif status_lower in ["error", "failed"]:
+                    state = "error"
+                elif status_lower in ["finished", "complete", "completed"]:
+                    state = "finished"
+                else:
+                    state = status_lower
 
-        # Publish Home Assistant discovery payload
-        self.publish_hass_discovery(status)
+                self.publish(f"{self.mqtt_topic_prefix}/state", state)
+                changes_made = True
+
+        # Publish full status as JSON for debugging
+        if changes_made:
+            self.publish(f"{self.mqtt_topic_prefix}/status", status, retain=True)
+            # Publish Home Assistant discovery payload (only once when we first get data)
+            self.publish_hass_discovery(status)
     
     def publish_hass_discovery(self, status: Dict):
         """Publish Home Assistant MQTT discovery configuration"""
@@ -289,7 +435,7 @@ class CrealityK1MaxMonitor:
         logger.info(f"Starting Creality K1 Max Monitor")
         logger.info(f"Printer: {self.printer_ip}:{self.printer_port}")
         logger.info(f"API Type: {self.api_type}")
-        logger.info(f"WebSocket URL: {self.websocket_url}")
+        logger.info(f"Trying websocket ports: {self.websocket_ports}")
 
         # Connect to MQTT
         if not self.connect_mqtt():
