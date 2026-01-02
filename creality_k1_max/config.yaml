@@ -28,7 +28,7 @@ options:
 schema:
   printer_ip: str
   printer_port: int
-  api_type: "list(moonraker|creality_cloud)"
+  api_type: list(moonraker|creality_cloud)
   update_interval: int
   mqtt_host: str
   mqtt_port: int
