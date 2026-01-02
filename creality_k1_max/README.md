@@ -4,18 +4,19 @@ Home Assistant add-on to monitor and control your Creality K1 Max 3D printer.
 
 ## Features
 
-- Real-time printer status monitoring
+- Real-time printer status monitoring via WebSocket
 - Temperature monitoring (bed and extruder)
 - Print progress tracking
 - MQTT integration for Home Assistant
 - Home Assistant MQTT Discovery support
-- Supports Moonraker API (Klipper firmware)
+- Supports Creality built-in web interface websocket
+- Automatic reconnection on connection loss
 
 ## Requirements
 
 - Creality K1 Max 3D printer
 - Printer must be connected to your network
-- Moonraker API enabled (if using Klipper firmware)
+- Printer's built-in web interface must be accessible
 - MQTT broker (Mosquitto add-on recommended)
 
 ## Installation
@@ -32,9 +33,9 @@ Home Assistant add-on to monitor and control your Creality K1 Max 3D printer.
 
 3. Configure the add-on:
    - **printer_ip**: IP address of your Creality K1 Max (required)
-   - **printer_port**: Port for Moonraker API (default: 7125)
-   - **api_type**: API type to use (moonraker or creality_cloud)
-   - **update_interval**: How often to poll the printer (seconds, default: 5)
+   - **printer_port**: Port for printer websocket (default: 8080)
+   - **api_type**: API type to use (websocket for built-in interface)
+   - **update_interval**: Reconnection interval if connection lost (seconds, default: 5)
    - **mqtt_host**: MQTT broker hostname (default: core-mosquitto)
    - **mqtt_port**: MQTT broker port (default: 1883)
    - **mqtt_user**: MQTT username (optional)
