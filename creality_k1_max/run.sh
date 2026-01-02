@@ -1,22 +1,24 @@
-#!/usr/bin/with-contenv bashio
-set -e
+#!/usr/bin/env bashio
+# shellcheck shell=bash
+
+set -euo pipefail
 
 echo "Starting Creality K1 Max Monitor..."
 
-# Load configuration from options.json
-PRINTER_IP=$(jq -r '.printer_ip // empty' /data/options.json)
-PRINTER_PORT=$(jq -r '.printer_port // 7125' /data/options.json)
-API_TYPE=$(jq -r '.api_type // "moonraker"' /data/options.json)
-UPDATE_INTERVAL=$(jq -r '.update_interval // 5' /data/options.json)
-MQTT_HOST=$(jq -r '.mqtt_host // "core-mosquitto"' /data/options.json)
-MQTT_PORT=$(jq -r '.mqtt_port // 1883' /data/options.json)
-MQTT_USER=$(jq -r '.mqtt_user // ""' /data/options.json)
-MQTT_PASSWORD=$(jq -r '.mqtt_password // ""' /data/options.json)
-MQTT_TOPIC_PREFIX=$(jq -r '.mqtt_topic_prefix // "creality_k1_max"' /data/options.json)
+# Read options from Home Assistant
+PRINTER_IP=$(bashio::config 'printer_ip' || echo "")
+PRINTER_PORT=$(bashio::config 'printer_port' || echo 7125)
+API_TYPE=$(bashio::config 'api_type' || echo "moonraker")
+UPDATE_INTERVAL=$(bashio::config 'update_interval' || echo 5)
+MQTT_HOST=$(bashio::config 'mqtt_host' || echo "core-mosquitto")
+MQTT_PORT=$(bashio::config 'mqtt_port' || echo 1883)
+MQTT_USER=$(bashio::config 'mqtt_user' || echo "")
+MQTT_PASSWORD=$(bashio::config 'mqtt_password' || echo "")
+MQTT_TOPIC_PREFIX=$(bashio::config 'mqtt_topic_prefix' || echo "creality_k1_max")
 
 # Validate required configuration
-if [ -z "$PRINTER_IP" ]; then
-    echo "ERROR: printer_ip is required in add-on configuration"
+if [[ -z "${PRINTER_IP}" || "${PRINTER_IP}" == "null" ]]; then
+    bashio::log.error "The 'printer_ip' option is required. Please configure it in the add-on settings."
     exit 1
 fi
 
