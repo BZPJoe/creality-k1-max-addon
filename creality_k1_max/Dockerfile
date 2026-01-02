@@ -1,15 +1,16 @@
-ARG BUILD_FROM=python:3.11-slim
-FROM ${BUILD_FROM}
+ARG BUILD_FROM
+FROM $BUILD_FROM
 
 # Set working directory
 WORKDIR /app
 
 # Install system dependencies
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    curl \
+RUN apk add --no-cache \
+    bash \
     jq \
-    && rm -rf /var/lib/apt/lists/*
+    curl \
+    python3 \
+    py3-pip
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .

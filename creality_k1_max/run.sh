@@ -1,9 +1,9 @@
-#!/usr/bin/env bash
+#!/usr/bin/with-contenv bashio
 set -e
 
 echo "Starting Creality K1 Max Monitor..."
 
-# Load configuration
+# Load configuration from options.json
 PRINTER_IP=$(jq -r '.printer_ip // empty' /data/options.json)
 PRINTER_PORT=$(jq -r '.printer_port // 7125' /data/options.json)
 API_TYPE=$(jq -r '.api_type // "moonraker"' /data/options.json)
