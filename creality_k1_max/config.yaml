@@ -32,4 +32,3 @@ schema:
   mqtt_user: str
   mqtt_password: str
   mqtt_topic_prefix: str
-
