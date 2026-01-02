@@ -29,6 +29,6 @@ schema:
   update_interval: int
   mqtt_host: str
   mqtt_port: int
-  mqtt_user: str?
-  mqtt_password: str?
+  mqtt_user: "str?"
+  mqtt_password: "str?"
   mqtt_topic_prefix: str
