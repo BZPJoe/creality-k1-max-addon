@@ -12,14 +12,14 @@ boot: auto
 map:
   - config:rw
 options:
-  printer_ip: ""
+  printer_ip: null
   printer_port: 7125
   api_type: moonraker
   update_interval: 5
   mqtt_host: core-mosquitto
   mqtt_port: 1883
-  mqtt_user: ""
-  mqtt_password: ""
+  mqtt_user: null
+  mqtt_password: null
   mqtt_topic_prefix: creality_k1_max
 
 schema:
