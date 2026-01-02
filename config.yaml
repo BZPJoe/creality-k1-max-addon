@@ -1,36 +1,39 @@
 name: Creality K1 Max Monitor
-slug: creality_k1_max
 description: Monitor and control your Creality K1 Max 3D printer from Home Assistant
 version: "1.0.0"
+slug: creality_k1_max
 arch:
   - aarch64
   - amd64
   - armv7
   - armhf
-init: false
-startup: services
+startup: application
 boot: auto
+ports:
+  "8080/tcp": null
+ports_description:
+  "8080/tcp": "Web interface (optional)"
 map:
-  - config:rw
+  - config
 options:
   printer_ip: ""
   printer_port: 7125
-  api_type: moonraker
+  api_type: "moonraker"
   update_interval: 5
-  mqtt_host: core-mosquitto
+  mqtt_host: "core-mosquitto"
   mqtt_port: 1883
   mqtt_user: ""
   mqtt_password: ""
-  mqtt_topic_prefix: creality_k1_max
-
+  mqtt_topic_prefix: "creality_k1_max"
 schema:
   printer_ip: str
   printer_port: int
-  api_type: str
+  api_type: "list(moonraker|creality_cloud)"
   update_interval: int
   mqtt_host: str
   mqtt_port: int
   mqtt_user: str
   mqtt_password: str
   mqtt_topic_prefix: str
+image: python:3.11-slim
 
