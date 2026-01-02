@@ -32,29 +32,30 @@ class CrealityK1MaxMonitor:
         self.mqtt_user = os.environ.get('MQTT_USER', '')
         self.mqtt_password = os.environ.get('MQTT_PASSWORD', '')
         self.mqtt_topic_prefix = os.environ.get('MQTT_TOPIC_PREFIX', 'creality_k1_max')
-
+        
         # Validate configuration
         if not self.printer_ip:
             raise ValueError("PRINTER_IP environment variable is required")
-
+        
         # Setup MQTT client
         self.mqtt_client = mqtt.Client(client_id=f"creality_k1_max_{int(time.time())}")
         if self.mqtt_user and self.mqtt_password:
             self.mqtt_client.username_pw_set(self.mqtt_user, self.mqtt_password)
-
+        
         self.mqtt_client.on_connect = self._on_mqtt_connect
         self.mqtt_client.on_disconnect = self._on_mqtt_disconnect
-
+        
         # WebSocket setup - try common Creality ports
         self.websocket_ports = [8080, 80, 9999, 7125]  # Common Creality websocket ports
         self.websocket_url = None
         self.ws = None
         self.ws_thread = None
         self.connected = False
+        self.last_connection_attempt = 0
 
         # API base URL (for fallback)
         self.api_base_url = f"http://{self.printer_ip}:{self.printer_port}"
-
+        
         # State tracking
         self.last_state = {}
         
@@ -70,7 +71,7 @@ class CrealityK1MaxMonitor:
     def _on_mqtt_disconnect(self, client, userdata, rc):
         """Callback for MQTT disconnection"""
         logger.warning(f"Disconnected from MQTT broker, return code {rc}")
-
+    
     def _on_websocket_open(self, ws):
         """Callback for websocket connection opened"""
         logger.info(f"Connected to printer websocket at {ws.url}")
@@ -81,6 +82,10 @@ class CrealityK1MaxMonitor:
     def _on_websocket_message(self, ws, message):
         """Callback for websocket messages"""
         try:
+            # Skip heartbeat/pong messages that are often just numbers or simple strings
+            if isinstance(message, str) and message.strip() in ['', 'pong', 'ping']:
+                return
+
             data = json.loads(message)
             logger.debug(f"Received websocket message: {data}")
 
@@ -107,9 +112,12 @@ class CrealityK1MaxMonitor:
                             break  # Process first valid status update
 
         except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse websocket message as JSON: {e}")
+            logger.debug(f"Failed to parse websocket message as JSON: {e}")
             # Some printers might send non-JSON data, log it for debugging
             logger.debug(f"Raw websocket message: {message[:200]}...")
+        except Exception as e:
+            logger.warning(f"Error processing websocket message: {e}")
+            logger.debug(f"Message content: {message[:200]}...")
 
     def _on_websocket_error(self, ws, error):
         """Callback for websocket errors"""
@@ -120,6 +128,7 @@ class CrealityK1MaxMonitor:
         """Callback for websocket connection closed"""
         logger.warning(f"WebSocket connection closed: {close_status_code} - {close_msg}")
         self.connected = False
+        self.publish(f"{self.mqtt_topic_prefix}/availability", "offline", retain=True)
 
     def connect_websocket(self):
         """Connect to printer websocket, trying multiple common ports"""
@@ -162,13 +171,13 @@ class CrealityK1MaxMonitor:
                     self.ws = None
                     self.ws_thread = None
 
-            except Exception as e:
-                logger.warning(f"Failed to connect to websocket on port {port}: {e}")
-                continue
+                except Exception as e:
+                    logger.debug(f"Failed to connect to websocket on port {port}: {e}")
+                    continue
 
         logger.error(f"Failed to connect to websocket on any port: {ports_to_try}")
         return False
-
+    
     def connect_mqtt(self):
         """Connect to MQTT broker"""
         try:
@@ -235,7 +244,7 @@ class CrealityK1MaxMonitor:
         """Process and publish printer status to MQTT"""
         if not status:
             return
-
+        
         logger.debug(f"Processing printer status: {status}")
 
         # Handle various Creality data formats
@@ -381,15 +390,15 @@ class CrealityK1MaxMonitor:
                     state = "finished"
                 else:
                     state = status_lower
-
-                self.publish(f"{self.mqtt_topic_prefix}/state", state)
+            
+            self.publish(f"{self.mqtt_topic_prefix}/state", state)
                 changes_made = True
-
+        
         # Publish full status as JSON for debugging
         if changes_made:
-            self.publish(f"{self.mqtt_topic_prefix}/status", status, retain=True)
+        self.publish(f"{self.mqtt_topic_prefix}/status", status, retain=True)
             # Publish Home Assistant discovery payload (only once when we first get data)
-            self.publish_hass_discovery(status)
+        self.publish_hass_discovery(status)
     
     def publish_hass_discovery(self, status: Dict):
         """Publish Home Assistant MQTT discovery configuration"""
@@ -436,36 +445,58 @@ class CrealityK1MaxMonitor:
         logger.info(f"Printer: {self.printer_ip}:{self.printer_port}")
         logger.info(f"API Type: {self.api_type}")
         logger.info(f"Trying websocket ports: {self.websocket_ports}")
-
+        
         # Connect to MQTT
         if not self.connect_mqtt():
             logger.error("Failed to connect to MQTT broker. Exiting.")
             return
-
+        
         # Wait for MQTT connection
         time.sleep(2)
-
+        
         # Connect to websocket
         if not self.connect_websocket():
-            logger.error("Failed to connect to printer websocket. Exiting.")
-            return
+            logger.warning("Failed to connect to printer websocket on any port. Will retry periodically.")
+            # Don't exit - keep running and retry connection
 
         # Keep the program running and monitor connection
         try:
-            while True:
+            reconnect_attempts = 0
+        while True:
                 if not self.connected:
-                    logger.warning("WebSocket disconnected, attempting to reconnect...")
-                    self.connect_websocket()
+                    current_time = time.time()
+                    # Only attempt reconnection every 30 seconds to avoid spam
+                    if current_time - self.last_connection_attempt >= 30:
+                        self.last_connection_attempt = current_time
+                        reconnect_attempts += 1
+
+                        if reconnect_attempts <= 3:  # Only log the first few attempts
+                            logger.info(f"WebSocket not connected, attempting to connect (attempt {reconnect_attempts})...")
+                        elif reconnect_attempts % 10 == 0:  # Log every 10th attempt
+                            logger.info(f"Still attempting to connect to WebSocket (attempt {reconnect_attempts})...")
+
+                        if self.connect_websocket():
+                            logger.info("Successfully connected to printer websocket!")
+                            reconnect_attempts = 0  # Reset counter on success
+                            self.publish(f"{self.mqtt_topic_prefix}/availability", "online", retain=True)
+                        else:
+                            logger.debug("WebSocket connection attempt failed")
+                            self.publish(f"{self.mqtt_topic_prefix}/availability", "offline", retain=True)
+
+                    # Sleep for a shorter interval to check connection status more frequently
                     time.sleep(5)
                 else:
-                    # Send a ping every 30 seconds to keep connection alive
-                    time.sleep(30)
-
-        except KeyboardInterrupt:
-            logger.info("Received interrupt signal. Shutting down...")
-        except Exception as e:
-            logger.error(f"Error in main loop: {e}", exc_info=True)
-
+                    # Connection is active, just sleep
+                    time.sleep(self.update_interval)
+                else:
+                    # Connection is active, just sleep
+                    time.sleep(self.update_interval)
+                
+            except KeyboardInterrupt:
+                logger.info("Received interrupt signal. Shutting down...")
+            except Exception as e:
+                logger.error(f"Error in main loop: {e}", exc_info=True)
+        
         # Cleanup
         self.publish(f"{self.mqtt_topic_prefix}/availability", "offline", retain=True)
         if self.ws:
